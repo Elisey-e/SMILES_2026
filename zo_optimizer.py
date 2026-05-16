@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import sys
 from typing import Callable
 
 import torch

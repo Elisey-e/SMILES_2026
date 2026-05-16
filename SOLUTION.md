@@ -47,7 +47,7 @@ The submitted `results.json` was produced with this configuration.
 {
   "val_accuracy_top1_imagenet_head": 0.0037,
   "val_accuracy_top1_init_head": 0.2396,
-  "val_accuracy_top1_finetuned": 0.3028,
+  "val_accuracy_top1_finetuned": 0.3069,
   "n_batches": 128,
   "batch_size": 64,
   "layers_tuned": [
@@ -60,7 +60,7 @@ The submitted `results.json` was produced with this configuration.
 The main metric is:
 
 ```text
-val_accuracy_top1_finetuned = 30.28%
+val_accuracy_top1_finetuned = 30.69%
 ```
 
 ---
