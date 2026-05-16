@@ -9,7 +9,6 @@ def get_transforms(train: bool) -> T.Compose:
     if train:
         return T.Compose(
             [
-                # Mild CIFAR-style spatial noise before upscaling.
                 T.RandomCrop(32, padding=4),
                 T.RandomHorizontalFlip(p=0.5),
 

@@ -1,9 +1,8 @@
 """
-5_4 — deterministic class-balanced train loader.
+Deterministic class-balanced train loader.
 
-Goal:
-  Reduce mini-batch class-prior noise for zero-order optimization.
-  Especially useful when optimizer is weight-only and bias is not tuned.
+Reduces mini-batch class-prior noise for zero-order optimization.
+Especially useful when optimizer is weight-only and bias is not tuned.
 """
 
 from __future__ import annotations
