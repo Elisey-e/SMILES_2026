@@ -103,7 +103,9 @@ This initialization uses:
 - no fixed-file modifications;
 - only pretrained weights already used by the assignment model.
 
-The main purpose is to avoid starting ZO from a random 100-way head, where the initial loss is too high and the limited budget is not enough for recovery. In my runs, this semantic initialization reached `23.96%` at checkpoint 2. A much stronger prototype-style initialization reached about `48.15%` before fine-tuning, but then ZO did not improve it (`48.14%` after fine-tuning), so I did not use that version. A weak blended prototype version went in the opposite direction and produced only about `6.02%` before fine-tuning and `7.19%` after ZO, which was too weak for the budget.
+This is a transfer-based initialization rather than a validation-tuned mapping. The mapping uses only class-name semantics between CIFAR-100 and ImageNet-1K and does not inspect CIFAR-100 validation images or labels. Its role is to put the linear head into a reasonable region of the pretrained feature space before the black-box ZO optimizer starts.
+
+The main purpose is to avoid starting ZO from a random 100-way head, where the initial loss is too high and the limited budget is not enough for recovery. In my runs, this semantic initialization reached `23.96%` at checkpoint 2. I also tested a prototype-style initialization based on class-mean backbone features. It produced much higher initialized-head accuracy, about `48.15%`, but it changed the nature of the solution: most of the final score came from a supervised prototype construction rather than from the zero-order optimizer (fine-tuned checkpoint was about `48.14%`). In addition, this variant required an additional feature-extraction stage over the training set before evaluation, whereas the final submission keeps `head_init.py` self-contained and uses only the pretrained ImageNet classifier weights already loaded by the model. I therefore treated the prototype variant as an ablation rather than the final submission. A weak blended prototype version went in the opposite direction and produced only about `6.02%` before fine-tuning and `7.19%` after ZO, which was too weak for the budget.
 
 ### 2. `zo_optimizer.py`: weight-only MeZO with SignSGD momentum
 
@@ -120,6 +122,8 @@ Instead of perturbing each parameter separately, all selected parameters are per
 ```
 
 Each query is made on the fixed mini-batch for the current step, so the perturbation pair compares the same images and labels.
+
+I report the number of black-box loss queries explicitly because ZO methods trade additional scalar evaluations for gradient-free updates. The official runner enforces the assignment sample budget as `n_batches × batch_size ≤ 8192`; my final run uses exactly `128 × 64 = 8192` sampled training images. Inside each optimizer step, the same fixed mini-batch is reused for multiple symmetric SPSA probes, so these extra evaluations reduce estimator variance but do not introduce additional training samples or labels. No gradients or backward passes are used.
 
 The final optimizer tunes only:
 
@@ -139,6 +143,12 @@ The update rule is SignSGD with momentum:
 - cosine decay down to `min_lr_ratio = 0.15`.
 
 The learning-rate warmup matters because the first few SPSA estimates are very noisy. I kept a conservative final schedule instead of trying to unfreeze ResNet blocks: tuning deeper layers added too many parameters relative to the 8192-sample budget.
+
+#### Why SignSGD worked better than Adam-style ZO updates
+
+The SPSA estimator in this setup is extremely noisy because each random direction produces only one scalar finite-difference value for all `51200` weights of `fc.weight`. The magnitude of this pseudo-gradient is therefore much less reliable than its averaged direction over several probes. Adam-style updates use coordinate-wise second moments, but in SPSA many coordinate-wise differences come from the random perturbation vector itself rather than from stable per-coordinate gradient information. In my experiments, increasing `n_samples` helped, but Adam-like normalization still amplified noisy coordinates.
+
+Momentum SignSGD was more stable: it accumulates several pseudo-gradient estimates over time and then uses only the sign of the momentum. This discards unreliable magnitude information while preserving a robust descent direction. This was especially useful with a strong initialized head, where the optimizer only needs to make small corrections to the classifier hyperplanes rather than learn the whole head from scratch.
 
 ### 3. `train_data.py`: deterministic class-balanced training order
 
@@ -204,6 +214,8 @@ The main contributions were:
 4. **Mild augmentation**  
    Simple crop + flip was more stable than stronger augmentation policies under ZO. More aggressive variants moved results within roughly `30.26%–30.80%`, so the final choice was based on stability and simplicity rather than the single best augmentation number.
 
+The main ZO-specific lesson was that the limiting factor was estimator noise, not the raw number of trainable parameters alone. Methods that tried to use more detailed coordinate-wise information, such as Adam-style updates on SPSA pseudo-gradients, performed worse. The successful direction was to make the optimization more robust: tune only `fc.weight`, use multiple symmetric SPSA probes on the same fixed batch, average them, accumulate momentum, and apply a sign update. This keeps the optimizer fully zero-order while avoiding over-interpreting noisy scalar loss differences.
+
 ---
 
 ## Experiments and failed attempts
@@ -236,9 +248,23 @@ I compared several train loader strategies:
 
 The deterministic class-balanced round-robin loader was selected because it was simple, stable, and almost tied with the best randomized variant while being easier to reproduce and explain. The main observation was that balancing only the whole 8192-sample subset was not enough; balancing each mini-batch mattered more for the zero-order loss differences.
 
+### Zero-order optimizer ablations
+
+I tested several ZO update rules after fixing the semantic head initialization. The most important observation was that more complex adaptive updates did not consistently help. The best-performing family was simple momentum SignSGD on `fc.weight` only.
+
+| Variant | Tuned parameters | Update rule | Top-1 |
+|---|---:|---|---:|
+| Adam-style MeZO | `fc.weight`, `fc.bias` | Adam on SPSA pseudo-gradients | lower / unstable |
+| Conservative Adam MeZO | `fc.weight`, `fc.bias` | lower LR, more SPSA samples | lower / unstable |
+| Hybrid Sign-Adam | `fc.weight`, `fc.bias` | mixed Adam and sign update | lower than final |
+| SignSGD MeZO | `fc.weight`, `fc.bias` | momentum sign update | strong, but worse than weight-only |
+| Final | `fc.weight` | momentum SignSGD | `30.69%` |
+
+The final result suggests that, under a small sample budget, the main bottleneck is not optimizer expressivity but estimator noise. The best solution was therefore to reduce the number of noisy degrees of freedom and use a robust update rule rather than tune more parameters with a more adaptive optimizer.
+
 ### Bias tuning
 
-I considered tuning `fc.bias` together with `fc.weight`, but did not keep it in the final solution. Bias updates were more sensitive to mini-batch class-prior noise, while tuning only `fc.weight` was more stable.
+Bias tuning was a particularly weak fit for this ZO setting. The bias vector mostly represents class-prior shifts, while CIFAR-100 is globally class-balanced. However, individual mini-batches with 100 classes are not perfectly representative, so the scalar loss difference from a bias perturbation often reflects the accidental class composition of the current batch rather than a useful validation-improving direction. This effect is amplified in zero-order optimization because the optimizer observes only scalar losses, not per-example or per-class gradients. Removing `fc.bias` reduced this source of batch-prior overfitting and made the final updates focus on rotating the class weight vectors in the pretrained feature space.
 
 ---
 
